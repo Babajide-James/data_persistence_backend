@@ -26,8 +26,13 @@ export const createProfile = async (req: Request, res: Response): Promise<void> 
   try {
     const { name } = req.body;
 
-    if (!name || typeof name !== 'string' || name.trim() === '') {
+    if (name === undefined || name === null || (typeof name === 'string' && name.trim() === '')) {
       res.status(400).json({ status: 'error', message: 'Missing or empty name' });
+      return;
+    }
+
+    if (typeof name !== 'string') {
+      res.status(422).json({ status: 'error', message: 'Invalid type' });
       return;
     }
 
