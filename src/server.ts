@@ -27,9 +27,13 @@ const PORT = process.env.PORT || 3000;
 
 // Initialize app only after DB ensures it's readable
 getDb().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Server starting on port ${PORT}`);
-  });
+  if (process.env.NODE_ENV !== 'production') {
+    app.listen(PORT, () => {
+      console.log(`Server starting on port ${PORT}`);
+    });
+  }
 }).catch(err => {
   console.error("Failed to start server due to DB error:", err);
 });
+
+export default app;
