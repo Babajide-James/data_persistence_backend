@@ -1,7 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 
-const DB_FILE = path.join(__dirname, '..', 'data.json');
+// Vercel only allows writing to the /tmp directory in production
+const DB_FILE = process.env.VERCEL || process.env.NODE_ENV === 'production' 
+  ? path.join('/tmp', 'data.json') 
+  : path.join(__dirname, '..', 'data.json');
 
 class JSONDatabase {
   data: any[] = [];
