@@ -1,8 +1,10 @@
 import { Request, Response } from 'express';
 import { v7 as uuidv7 } from 'uuid';
-import { getDb } from '../database';
+import { getDb, QueryOptions } from '../database';
+import { parseNLQuery } from '../utils/nlQueryParser';
 
-// Types for responses
+// ─── External API response types ─────────────────────────────────────────────
+
 interface GenderizeResponse {
   count: number;
   name: string;
@@ -22,6 +24,59 @@ interface NationalizeResponse {
   country: { country_id: string; probability: number }[];
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const VALID_SORT_COLS = new Set(['age', 'created_at', 'gender_probability']);
+const VALID_AGE_GROUPS = new Set(['child', 'teenager', 'adult', 'senior']);
+const VALID_GENDERS = new Set(['male', 'female']);
+const VALID_ORDERS = new Set(['asc', 'desc']);
+
+// ISO 2-letter → country name for create endpoint
+const ISO_COUNTRY_NAMES: Record<string, string> = {
+  NG: 'Nigeria', KE: 'Kenya', GH: 'Ghana', ET: 'Ethiopia', TZ: 'Tanzania',
+  ZA: 'South Africa', UG: 'Uganda', CM: 'Cameroon', CI: "Côte d'Ivoire",
+  SN: 'Senegal', ML: 'Mali', AO: 'Angola', ZM: 'Zambia', ZW: 'Zimbabwe',
+  MZ: 'Mozambique', RW: 'Rwanda', MW: 'Malawi', NA: 'Namibia', BW: 'Botswana',
+  SD: 'Sudan', EG: 'Egypt', MA: 'Morocco', TN: 'Tunisia', DZ: 'Algeria',
+  LY: 'Libya', SO: 'Somalia', CD: 'DR Congo', CG: 'Republic of the Congo',
+  GA: 'Gabon', BJ: 'Benin', TG: 'Togo', NE: 'Niger', BF: 'Burkina Faso',
+  SL: 'Sierra Leone', GN: 'Guinea', GW: 'Guinea-Bissau', GM: 'Gambia',
+  CV: 'Cape Verde', MU: 'Mauritius', MG: 'Madagascar', ER: 'Eritrea',
+  DJ: 'Djibouti', KM: 'Comoros', LR: 'Liberia', ST: 'São Tomé and Príncipe',
+  LS: 'Lesotho', SZ: 'Eswatini', CF: 'Central African Republic', TD: 'Chad',
+  MR: 'Mauritania', GQ: 'Equatorial Guinea', BI: 'Burundi', EH: 'Western Sahara',
+  US: 'United States', GB: 'United Kingdom', FR: 'France', DE: 'Germany',
+  BR: 'Brazil', IN: 'India', CN: 'China', JP: 'Japan', AU: 'Australia',
+  CA: 'Canada', RU: 'Russia', ES: 'Spain', IT: 'Italy', PT: 'Portugal',
+  NL: 'Netherlands', SE: 'Sweden', NO: 'Norway', DK: 'Denmark', FI: 'Finland',
+  PL: 'Poland', UA: 'Ukraine', TR: 'Turkey', SA: 'Saudi Arabia', KR: 'South Korea',
+  AR: 'Argentina', MX: 'Mexico', ID: 'Indonesia', PK: 'Pakistan', BD: 'Bangladesh',
+  VN: 'Vietnam', TH: 'Thailand', IR: 'Iran', IQ: 'Iraq', NZ: 'New Zealand',
+};
+
+function getAgeGroup(age: number): string {
+  if (age <= 12) return 'child';
+  if (age <= 19) return 'teenager';
+  if (age <= 59) return 'adult';
+  return 'senior';
+}
+
+function parseIntParam(val: unknown, name: string): { value: number } | { error: string } {
+  if (val === undefined || val === null) return { value: NaN }; // not provided
+  const n = Number(val);
+  if (!Number.isInteger(n) || isNaN(n)) return { error: `'${name}' must be an integer` };
+  return { value: n };
+}
+
+function parseFloatParam(val: unknown, name: string): { value: number } | { error: string } {
+  if (val === undefined || val === null) return { value: NaN };
+  const n = Number(val);
+  if (isNaN(n)) return { error: `'${name}' must be a number` };
+  return { value: n };
+}
+
+// ─── POST /api/profiles ───────────────────────────────────────────────────────
+
 export const createProfile = async (req: Request, res: Response): Promise<void> => {
   try {
     const { name } = req.body;
@@ -37,160 +92,188 @@ export const createProfile = async (req: Request, res: Response): Promise<void> 
     }
 
     const normalizedName = name.trim().toLowerCase();
-    const db = await getDb();
+    const db = getDb();
 
-    // Idempotency check
-    const existingProfile = await db.findByName(normalizedName);
-    if (existingProfile) {
-      // Re-map db row to match response exactly
-      const returnedProfile = { ...existingProfile };
-
-      res.status(201).json({
-        status: 'success',
-        message: 'Profile already exists',
-        data: returnedProfile
-      });
+    const existing = db.findByName(normalizedName);
+    if (existing) {
+      res.status(201).json({ status: 'success', message: 'Profile already exists', data: existing });
       return;
     }
 
-    // Fetch data concurrently
     const [genderRes, ageRes, nationRes] = await Promise.all([
       fetch(`https://api.genderize.io?name=${encodeURIComponent(normalizedName)}`),
       fetch(`https://api.agify.io?name=${encodeURIComponent(normalizedName)}`),
-      fetch(`https://api.nationalize.io?name=${encodeURIComponent(normalizedName)}`)
+      fetch(`https://api.nationalize.io?name=${encodeURIComponent(normalizedName)}`),
     ]);
 
-    if (!genderRes.ok) {
-      res.status(502).json({ status: 'error', message: 'Genderize returned an invalid response' });
-      return;
-    }
-    if (!ageRes.ok) {
-      res.status(502).json({ status: 'error', message: 'Agify returned an invalid response' });
-      return;
-    }
-    if (!nationRes.ok) {
-      res.status(502).json({ status: 'error', message: 'Nationalize returned an invalid response' });
-      return;
-    }
+    if (!genderRes.ok) { res.status(502).json({ status: 'error', message: 'Genderize returned an invalid response' }); return; }
+    if (!ageRes.ok)    { res.status(502).json({ status: 'error', message: 'Agify returned an invalid response' }); return; }
+    if (!nationRes.ok) { res.status(502).json({ status: 'error', message: 'Nationalize returned an invalid response' }); return; }
 
     const genderData = (await genderRes.json()) as GenderizeResponse;
-    const ageData = (await ageRes.json()) as AgifyResponse;
+    const ageData    = (await ageRes.json())    as AgifyResponse;
     const nationData = (await nationRes.json()) as NationalizeResponse;
 
-    // Validate Genderize response
-    if (genderData.gender === null || genderData.count === 0) {
-      res.status(502).json({ status: 'error', message: 'Genderize returned an invalid response' });
-      return;
-    }
+    if (genderData.gender === null || genderData.count === 0) { res.status(502).json({ status: 'error', message: 'Genderize returned an invalid response' }); return; }
+    if (ageData.age === null) { res.status(502).json({ status: 'error', message: 'Agify returned an invalid response' }); return; }
+    if (!nationData.country || nationData.country.length === 0) { res.status(502).json({ status: 'error', message: 'Nationalize returned an invalid response' }); return; }
 
-    // Validate Agify response
-    if (ageData.age === null) {
-      res.status(502).json({ status: 'error', message: 'Agify returned an invalid response' });
-      return;
-    }
-
-    // Validate Nationalize response
-    if (!nationData.country || nationData.country.length === 0) {
-      res.status(502).json({ status: 'error', message: 'Nationalize returned an invalid response' });
-      return;
-    }
-
-    // Process Genderize
     const gender = genderData.gender;
     const gender_probability = genderData.probability;
-    const sample_size = genderData.count;
+    const age = ageData.age!;
+    const age_group = getAgeGroup(age);
 
-    // Process Agify
-    const age = ageData.age;
-    let age_group = '';
-    if (age <= 12) {
-      age_group = 'child';
-    } else if (age <= 19) {
-      age_group = 'teenager';
-    } else if (age <= 59) {
-      age_group = 'adult';
-    } else {
-      age_group = 'senior';
-    }
+    const sortedCountries = [...nationData.country].sort((a, b) => b.probability - a.probability);
+    const topCountry = sortedCountries[0];
+    const country_id = topCountry.country_id.toUpperCase();
+    const country_probability = topCountry.probability;
+    const country_name = ISO_COUNTRY_NAMES[country_id] ?? country_id;
 
-    // Process Nationalize (highest probability country)
-    const sortedCountries = nationData.country.sort((a, b) => b.probability - a.probability);
-    const country = sortedCountries[0];
-    const country_id = country.country_id;
-    const country_probability = country.probability;
-
-    const id = uuidv7();
-    const created_at = new Date().toISOString();
-
-    const insertData = {
-      id,
+    const record = {
+      id: uuidv7(),
       name: normalizedName,
       gender,
       gender_probability,
-      sample_size,
       age,
       age_group,
       country_id,
+      country_name,
       country_probability,
-      created_at
+      created_at: new Date().toISOString(),
     };
 
-    await db.insert(insertData);
-
-    res.status(201).json({
-      status: 'success',
-      data: insertData
-    });
+    db.insert(record);
+    res.status(201).json({ status: 'success', data: record });
   } catch (error) {
     console.error('Error in createProfile:', error);
     res.status(500).json({ status: 'error', message: 'Internal server failure' });
   }
 };
 
+// ─── GET /api/profiles/:id ────────────────────────────────────────────────────
+
 export const getProfileById = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const db = await getDb();
-    
-    const profile = await db.findById(id);
-    
+    const db = getDb();
+    const profile = db.findById(id);
+
     if (!profile) {
       res.status(404).json({ status: 'error', message: 'Profile not found' });
       return;
     }
-    
-    res.status(200).json({
-      status: 'success',
-      data: profile
-    });
+
+    res.status(200).json({ status: 'success', data: profile });
   } catch (error) {
     console.error('Error in getProfileById:', error);
     res.status(500).json({ status: 'error', message: 'Internal server failure' });
   }
 };
 
+// ─── DELETE /api/profiles/:id ─────────────────────────────────────────────────
+
+export const deleteProfileById = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const db = getDb();
+    const success = db.deleteById(id);
+
+    if (!success) {
+      res.status(404).json({ status: 'error', message: 'Profile not found' });
+      return;
+    }
+
+    res.status(204).send();
+  } catch (error) {
+    console.error('Error in deleteProfileById:', error);
+    res.status(500).json({ status: 'error', message: 'Internal server failure' });
+  }
+};
+
+// ─── GET /api/profiles ────────────────────────────────────────────────────────
+
 export const getProfiles = async (req: Request, res: Response): Promise<void> => {
   try {
-    const gender = req.query.gender as string | undefined;
-    const country_id = req.query.country_id as string | undefined;
-    const age_group = req.query.age_group as string | undefined;
-    
-    const db = await getDb();
-    const profiles = await db.filter(gender?.toLowerCase(), country_id?.toLowerCase(), age_group?.toLowerCase());
-    
-    const returnData = profiles.map(p => ({
-      id: p.id,
-      name: p.name,
-      gender: p.gender,
-      age: p.age,
-      age_group: p.age_group,
-      country_id: p.country_id
-    }));
+    const {
+      gender,
+      age_group,
+      country_id,
+      min_age,
+      max_age,
+      min_gender_probability,
+      min_country_probability,
+      sort_by,
+      order,
+      page: pageRaw,
+      limit: limitRaw,
+    } = req.query;
+
+    const errors: string[] = [];
+
+    // Validate gender
+    if (gender !== undefined && !VALID_GENDERS.has((gender as string).toLowerCase())) {
+      errors.push(`'gender' must be 'male' or 'female'`);
+    }
+
+    // Validate age_group
+    if (age_group !== undefined && !VALID_AGE_GROUPS.has((age_group as string).toLowerCase())) {
+      errors.push(`'age_group' must be one of: child, teenager, adult, senior`);
+    }
+
+    // Validate sort_by
+    if (sort_by !== undefined && !VALID_SORT_COLS.has(sort_by as string)) {
+      errors.push(`'sort_by' must be one of: age, created_at, gender_probability`);
+    }
+
+    // Validate order
+    if (order !== undefined && !VALID_ORDERS.has((order as string).toLowerCase())) {
+      errors.push(`'order' must be 'asc' or 'desc'`);
+    }
+
+    // Validate numeric params
+    const minAgeResult = min_age !== undefined ? parseIntParam(min_age, 'min_age') : null;
+    const maxAgeResult = max_age !== undefined ? parseIntParam(max_age, 'max_age') : null;
+    const minGPResult  = min_gender_probability !== undefined ? parseFloatParam(min_gender_probability, 'min_gender_probability') : null;
+    const minCPResult  = min_country_probability !== undefined ? parseFloatParam(min_country_probability, 'min_country_probability') : null;
+    const pageResult   = pageRaw !== undefined ? parseIntParam(pageRaw, 'page') : null;
+    const limitResult  = limitRaw !== undefined ? parseIntParam(limitRaw, 'limit') : null;
+
+    if (minAgeResult && 'error' in minAgeResult) errors.push(minAgeResult.error);
+    if (maxAgeResult && 'error' in maxAgeResult) errors.push(maxAgeResult.error);
+    if (minGPResult  && 'error' in minGPResult)  errors.push(minGPResult.error);
+    if (minCPResult  && 'error' in minCPResult)  errors.push(minCPResult.error);
+    if (pageResult   && 'error' in pageResult)   errors.push(pageResult.error);
+    if (limitResult  && 'error' in limitResult)  errors.push(limitResult.error);
+
+    if (errors.length > 0) {
+      res.status(422).json({ status: 'error', message: 'Invalid query parameters' });
+      return;
+    }
+
+    const opts: QueryOptions = {};
+
+    if (gender)    opts.gender    = (gender as string).toLowerCase();
+    if (age_group) opts.age_group = (age_group as string).toLowerCase();
+    if (country_id) opts.country_id = (country_id as string).toUpperCase();
+    if (sort_by)   opts.sort_by   = sort_by as QueryOptions['sort_by'];
+    if (order)     opts.order     = (order as string).toLowerCase() as QueryOptions['order'];
+
+    if (minAgeResult && !('error' in minAgeResult) && !isNaN(minAgeResult.value)) opts.min_age = minAgeResult.value;
+    if (maxAgeResult && !('error' in maxAgeResult) && !isNaN(maxAgeResult.value)) opts.max_age = maxAgeResult.value;
+    if (minGPResult  && !('error' in minGPResult)  && !isNaN(minGPResult.value))  opts.min_gender_probability  = minGPResult.value;
+    if (minCPResult  && !('error' in minCPResult)  && !isNaN(minCPResult.value))  opts.min_country_probability = minCPResult.value;
+    if (pageResult   && !('error' in pageResult)   && !isNaN(pageResult.value))   opts.page  = pageResult.value;
+    if (limitResult  && !('error' in limitResult)  && !isNaN(limitResult.value))  opts.limit = limitResult.value;
+
+    const db = getDb();
+    const result = db.query(opts);
 
     res.status(200).json({
       status: 'success',
-      count: returnData.length,
-      data: returnData
+      page:   result.page,
+      limit:  result.limit,
+      total:  result.total,
+      data:   result.data,
     });
   } catch (error) {
     console.error('Error in getProfiles:', error);
@@ -198,20 +281,49 @@ export const getProfiles = async (req: Request, res: Response): Promise<void> =>
   }
 };
 
-export const deleteProfileById = async (req: Request, res: Response): Promise<void> => {
+// ─── GET /api/profiles/search ─────────────────────────────────────────────────
+
+export const searchProfiles = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
-    const db = await getDb();
-    
-    const success = await db.deleteById(id);
-    if (!success) {
-      res.status(404).json({ status: 'error', message: 'Profile not found' });
+    const q = req.query.q as string | undefined;
+
+    if (!q || q.trim() === '') {
+      res.status(400).json({ status: 'error', message: 'Invalid query parameters' });
       return;
     }
-    
-    res.status(204).send(); // 204 No Content
+
+    const parsed = parseNLQuery(q);
+    if (parsed === null) {
+      res.status(422).json({ status: 'error', message: 'Unable to interpret query' });
+      return;
+    }
+
+    // Pagination from query string
+    const pageResult  = req.query.page  !== undefined ? parseIntParam(req.query.page,  'page')  : null;
+    const limitResult = req.query.limit !== undefined ? parseIntParam(req.query.limit, 'limit') : null;
+
+    if ((pageResult  && 'error' in pageResult) ||
+        (limitResult && 'error' in limitResult)) {
+      res.status(422).json({ status: 'error', message: 'Invalid query parameters' });
+      return;
+    }
+
+    const opts: QueryOptions = { ...parsed };
+    if (pageResult  && !('error' in pageResult)  && !isNaN(pageResult.value))  opts.page  = pageResult.value;
+    if (limitResult && !('error' in limitResult) && !isNaN(limitResult.value)) opts.limit = limitResult.value;
+
+    const db = getDb();
+    const result = db.query(opts);
+
+    res.status(200).json({
+      status: 'success',
+      page:   result.page,
+      limit:  result.limit,
+      total:  result.total,
+      data:   result.data,
+    });
   } catch (error) {
-    console.error('Error in deleteProfileById:', error);
+    console.error('Error in searchProfiles:', error);
     res.status(500).json({ status: 'error', message: 'Internal server failure' });
   }
 };

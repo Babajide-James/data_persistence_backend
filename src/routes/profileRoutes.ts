@@ -3,10 +3,15 @@ import {
   createProfile,
   getProfileById,
   getProfiles,
-  deleteProfileById
+  deleteProfileById,
+  searchProfiles,
 } from '../controllers/profileController';
 
 const router = Router();
+
+// IMPORTANT: /search must be registered BEFORE /:id
+// to prevent express matching "search" as an :id parameter
+router.get('/search', searchProfiles);
 
 router.post('/', createProfile);
 router.get('/', getProfiles);
