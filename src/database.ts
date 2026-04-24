@@ -4,9 +4,8 @@ import fs from "fs";
 import { v7 as uuidv7 } from "uuid";
 
 // Path to the pre-built DB shipped with the Vercel function bundle.
-// On Vercel, __dirname is /var/task/src so '../' is the project root
-// where vercel puts includeFiles.
-const BUNDLED_DB_PATH = path.join(__dirname, "..", "profiles.db");
+// process.cwd() is 100% reliable for both Vercel (/var/task) and local root.
+const BUNDLED_DB_PATH = path.join(process.cwd(), "profiles.db");
 
 // Vercel only allows writing to /tmp; locally write back to the same file.
 const IS_PRODUCTION =
@@ -71,7 +70,7 @@ class SQLiteDatabase {
     // Provide locateFile so sql.js can find its WASM binary in
     // both local and Vercel serverless environments.
     const SQL = await initSqlJs({
-      locateFile: (file: string) => path.join(__dirname, "..", file),
+      locateFile: (file: string) => path.join(process.cwd(), file),
     });
 
     // Load strategy (fastest first):

@@ -42,8 +42,8 @@ app.use((req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-// Resolve seed file path — works locally (src/ or dist/) and on Vercel
-const SEED_FILE = path.join(__dirname, "..", "seed_profiles.json");
+// Resolve seed file path — works locally and on Vercel
+const SEED_FILE = path.join(process.cwd(), "seed_profiles.json");
 
 // Bootstrap: initialize DB + seed, then export app
 // On Vercel, the function handles incoming requests via the exported `app`.
