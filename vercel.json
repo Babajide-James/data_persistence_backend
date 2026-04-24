@@ -5,7 +5,11 @@
       "src": "src/server.ts",
       "use": "@vercel/node",
       "config": {
-        "includeFiles": ["profiles.db", "seed_profiles.json"]
+        "includeFiles": [
+          "profiles.db",
+          "seed_profiles.json",
+          "node_modules/sql.js/dist/sql-wasm.wasm"
+        ]
       }
     }
   ],
