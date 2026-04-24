@@ -3,12 +3,20 @@ import path from "path";
 import fs from "fs";
 import { v7 as uuidv7 } from "uuid";
 
-// Vercel only allows writing to /tmp; locally use project root
+// Path to the pre-built DB shipped with the Vercel function bundle.
+// On Vercel, __dirname is /var/task/src so '../' is the project root
+// where vercel puts includeFiles.
+const BUNDLED_DB_PATH = path.join(__dirname, "..", "profiles.db");
+
+// Vercel only allows writing to /tmp; locally write back to the same file.
 const IS_PRODUCTION =
   !!process.env.VERCEL || process.env.NODE_ENV === "production";
-const DB_PATH = IS_PRODUCTION
+
+// On Vercel we write mutations to /tmp so the bundled file stays pristine.
+// Locally (dev) we write back to the project-root profiles.db.
+const RUNTIME_DB_PATH = IS_PRODUCTION
   ? path.join("/tmp", "profiles.db")
-  : path.join(__dirname, "..", "profiles.db");
+  : BUNDLED_DB_PATH;
 
 export interface Profile {
   id: string;
@@ -60,20 +68,26 @@ class SQLiteDatabase {
   async init(): Promise<void> {
     if (this.initialized) return;
 
-    // Provide locateFile so sql.js can find its WASM binary in both
-    // local (node_modules) and Vercel serverless environments.
+    // Provide locateFile so sql.js can find its WASM binary in
+    // both local and Vercel serverless environments.
     const SQL = await initSqlJs({
-      locateFile: (file: string) => {
-        // Try to find the wasm next to the sql.js module
-        const wasmPath = require.resolve(`sql.js/dist/${file}`);
-        return wasmPath;
-      },
+      locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
     });
 
-    if (fs.existsSync(DB_PATH)) {
-      const fileBuffer = fs.readFileSync(DB_PATH);
+    // Load strategy (fastest first):
+    // 1. /tmp/profiles.db  – warm Vercel restart (may have POST/DELETE writes)
+    // 2. bundled profiles.db – Vercel cold start (pre-built, no seeding needed)
+    // 3. empty DB           – absolute fallback (seeding will be triggered)
+    if (fs.existsSync(RUNTIME_DB_PATH)) {
+      console.log(`Loading DB from runtime path: ${RUNTIME_DB_PATH}`);
+      const fileBuffer = fs.readFileSync(RUNTIME_DB_PATH);
+      this.db = new SQL.Database(fileBuffer);
+    } else if (fs.existsSync(BUNDLED_DB_PATH)) {
+      console.log(`Loading pre-built DB from bundle: ${BUNDLED_DB_PATH}`);
+      const fileBuffer = fs.readFileSync(BUNDLED_DB_PATH);
       this.db = new SQL.Database(fileBuffer);
     } else {
+      console.log("No existing DB found – starting fresh (will seed).");
       this.db = new SQL.Database();
     }
 
@@ -83,7 +97,9 @@ class SQLiteDatabase {
 
   private save(): void {
     const data = this.db.export();
-    fs.writeFileSync(DB_PATH, Buffer.from(data));
+    // Write mutations to RUNTIME_DB_PATH.
+    // On Vercel: /tmp/profiles.db (writable). Locally: project-root profiles.db.
+    fs.writeFileSync(RUNTIME_DB_PATH, Buffer.from(data));
   }
 
   private initSchema(): void {
