@@ -3,7 +3,10 @@
   "builds": [
     {
       "src": "src/server.ts",
-      "use": "@vercel/node"
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": ["seed_profiles.json"]
+      }
     }
   ],
   "routes": [
@@ -11,5 +14,11 @@
       "src": "/(.*)",
       "dest": "src/server.ts"
     }
-  ]
+  ],
+  "functions": {
+    "src/server.ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  }
 }

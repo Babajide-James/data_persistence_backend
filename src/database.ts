@@ -60,7 +60,15 @@ class SQLiteDatabase {
   async init(): Promise<void> {
     if (this.initialized) return;
 
-    const SQL = await initSqlJs();
+    // Provide locateFile so sql.js can find its WASM binary in both
+    // local (node_modules) and Vercel serverless environments.
+    const SQL = await initSqlJs({
+      locateFile: (file: string) => {
+        // Try to find the wasm next to the sql.js module
+        const wasmPath = require.resolve(`sql.js/dist/${file}`);
+        return wasmPath;
+      },
+    });
 
     if (fs.existsSync(DB_PATH)) {
       const fileBuffer = fs.readFileSync(DB_PATH);
@@ -147,6 +155,12 @@ class SQLiteDatabase {
   }
 
   seedFromFile(seedPath: string): void {
+    // Skip seeding if the DB already has data (avoid re-seeding on warm instances)
+    if (this.count() > 0) {
+      console.log(`DB already has ${this.count()} profiles, skipping seed.`);
+      return;
+    }
+
     if (!fs.existsSync(seedPath)) {
       console.warn(`Seed file not found at ${seedPath}, skipping seed.`);
       return;
@@ -190,6 +204,7 @@ class SQLiteDatabase {
     this.db.run("COMMIT");
     stmt.free();
 
+    // Persist to /tmp (writable on Vercel) or local path so data survives warm restarts
     this.save();
     console.log(`Seeded ${this.count()} profiles.`);
   }
