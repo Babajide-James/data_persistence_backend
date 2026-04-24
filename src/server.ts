@@ -1,6 +1,5 @@
 import express from "express";
 import cors from "cors";
-import path from "path";
 import { getDb } from "./database";
 import profileRoutes from "./routes/profileRoutes";
 
@@ -42,26 +41,22 @@ app.use((req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-// Resolve seed file path — works locally and on Vercel
-const SEED_FILE = path.join(process.cwd(), "seed_profiles.json");
-
-// Bootstrap: initialize DB + seed, then export app
-// On Vercel, the function handles incoming requests via the exported `app`.
-// Locally, we start an HTTP listener.
-(async () => {
-  try {
-    const db = await getDb();
-    db.seedFromFile(SEED_FILE);
-    console.log("Database ready.");
-  } catch (err) {
-    console.error("Failed to initialize database:", err);
-  }
-
-  if (process.env.NODE_ENV !== "production") {
-    app.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
-  }
-})();
+// Serverless platforms should not do blocking bootstrap work at module load.
+// We initialize lazily through getDb() during requests, and only warm the DB
+// before starting the local dev server.
+if (process.env.NODE_ENV !== "production") {
+  (async () => {
+    try {
+      await getDb();
+      console.log("Database ready.");
+      app.listen(PORT, () => {
+        console.log(`Server running on http://localhost:${PORT}`);
+      });
+    } catch (err) {
+      console.error("Failed to initialize database:", err);
+      process.exit(1);
+    }
+  })();
+}
 
 export default app;

@@ -32,6 +32,7 @@ const VALID_SORT_COLS = new Set(["age", "created_at", "gender_probability"]);
 const VALID_AGE_GROUPS = new Set(["child", "teenager", "adult", "senior"]);
 const VALID_GENDERS = new Set(["male", "female"]);
 const VALID_ORDERS = new Set(["asc", "desc"]);
+const EXTERNAL_API_TIMEOUT_MS = 8000;
 
 // ISO 2-letter → country name for create endpoint
 const ISO_COUNTRY_NAMES: Record<string, string> = {
@@ -185,6 +186,18 @@ function sendPaginatedResponse(
   });
 }
 
+async function fetchJsonWithTimeout<T>(url: string): Promise<T> {
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(EXTERNAL_API_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Upstream request failed with status ${response.status}`);
+  }
+
+  return (await response.json()) as T;
+}
+
 // ─── POST /api/profiles ───────────────────────────────────────────────────────
 
 export const createProfile = async (
@@ -223,41 +236,17 @@ export const createProfile = async (
       return;
     }
 
-    const [genderRes, ageRes, nationRes] = await Promise.all([
-      fetch(
+    const [genderData, ageData, nationData] = await Promise.all([
+      fetchJsonWithTimeout<GenderizeResponse>(
         `https://api.genderize.io?name=${encodeURIComponent(normalizedName)}`,
       ),
-      fetch(`https://api.agify.io?name=${encodeURIComponent(normalizedName)}`),
-      fetch(
+      fetchJsonWithTimeout<AgifyResponse>(
+        `https://api.agify.io?name=${encodeURIComponent(normalizedName)}`,
+      ),
+      fetchJsonWithTimeout<NationalizeResponse>(
         `https://api.nationalize.io?name=${encodeURIComponent(normalizedName)}`,
       ),
     ]);
-
-    if (!genderRes.ok) {
-      res.status(502).json({
-        status: "error",
-        message: "Genderize returned an invalid response",
-      });
-      return;
-    }
-    if (!ageRes.ok) {
-      res.status(502).json({
-        status: "error",
-        message: "Agify returned an invalid response",
-      });
-      return;
-    }
-    if (!nationRes.ok) {
-      res.status(502).json({
-        status: "error",
-        message: "Nationalize returned an invalid response",
-      });
-      return;
-    }
-
-    const genderData = (await genderRes.json()) as GenderizeResponse;
-    const ageData = (await ageRes.json()) as AgifyResponse;
-    const nationData = (await nationRes.json()) as NationalizeResponse;
 
     if (genderData.gender === null || genderData.count === 0) {
       res.status(502).json({
@@ -311,6 +300,18 @@ export const createProfile = async (
     res.status(201).json({ status: "success", data: record });
   } catch (error) {
     console.error("Error in createProfile:", error);
+    if (error instanceof Error && error.name === "TimeoutError") {
+      res
+        .status(502)
+        .json({ status: "error", message: "External API request timed out" });
+      return;
+    }
+    if (error instanceof Error && error.message.startsWith("Upstream request")) {
+      res
+        .status(502)
+        .json({ status: "error", message: "External API request failed" });
+      return;
+    }
     res
       .status(500)
       .json({ status: "error", message: "Internal server failure" });

@@ -6,6 +6,7 @@ import { v7 as uuidv7 } from "uuid";
 // Path to the pre-built DB shipped with the Vercel function bundle.
 // process.cwd() is 100% reliable for both Vercel (/var/task) and local root.
 const BUNDLED_DB_PATH = path.join(process.cwd(), "profiles.db");
+const SEED_FILE_PATH = path.join(process.cwd(), "seed_profiles.json");
 
 // Vercel only allows writing to /tmp; locally write back to the same file.
 const IS_PRODUCTION =
@@ -63,6 +64,10 @@ function rowToProfile(columns: string[], values: any[]): Profile {
 class SQLiteDatabase {
   private db!: SqlJsDatabase;
   private initialized = false;
+
+  isReady(): boolean {
+    return this.initialized;
+  }
 
   async init(): Promise<void> {
     if (this.initialized) return;
@@ -353,11 +358,26 @@ class SQLiteDatabase {
 }
 
 let dbInstance: SQLiteDatabase | null = null;
+let dbInitPromise: Promise<SQLiteDatabase> | null = null;
 
 export async function getDb(): Promise<SQLiteDatabase> {
-  if (!dbInstance) {
-    dbInstance = new SQLiteDatabase();
-    await dbInstance.init();
+  if (dbInstance?.isReady()) {
+    return dbInstance;
   }
-  return dbInstance;
+
+  if (!dbInitPromise) {
+    dbInitPromise = (async () => {
+      const instance = dbInstance ?? new SQLiteDatabase();
+      dbInstance = instance;
+      await instance.init();
+      instance.seedFromFile(SEED_FILE_PATH);
+      return instance;
+    })().catch((error) => {
+      dbInitPromise = null;
+      dbInstance = null;
+      throw error;
+    });
+  }
+
+  return dbInitPromise;
 }
