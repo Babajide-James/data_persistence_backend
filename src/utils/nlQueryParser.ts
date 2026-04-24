@@ -113,9 +113,9 @@ export function parseNLQuery(query: string): ParsedFilters | null {
   let matched = false;
 
   // ── Gender ──────────────────────────────────────────────────────────────
-  const hasMale = /\bmale(s)?\b/.test(q);
-  const hasFemale = /\bfemale(s)?\b/.test(q);
-  const hasMaleAndFemale = /\b(male(s)?\s+and\s+female(s)?|female(s)?\s+and\s+male(s)?|both genders?)\b/.test(q);
+  const hasMale = /\b(male(s)?|man|men|boy(s)?)\b/.test(q);
+  const hasFemale = /\b(female(s)?|woman|women|girl(s)?)\b/.test(q);
+  const hasMaleAndFemale = /\b((male(s)?|man|men|boy(s)?)\s+and\s+(female(s)?|woman|women|girl(s)?)|(female(s)?|woman|women|girl(s)?)\s+and\s+(male(s)?|man|men|boy(s)?)|both genders?)\b/.test(q);
 
   if (hasMaleAndFemale) {
     // No gender filter — both

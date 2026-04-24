@@ -15,7 +15,6 @@ export interface Profile {
   name: string;
   gender: string;
   gender_probability: number;
-  sample_size: number;
   age: number;
   age_group: string;
   country_id: string;
@@ -81,12 +80,48 @@ class SQLiteDatabase {
 
   private initSchema(): void {
     this.db.run(`
+      DROP INDEX IF EXISTS idx_gender;
+      DROP INDEX IF EXISTS idx_age_group;
+      DROP INDEX IF EXISTS idx_country_id;
+      DROP INDEX IF EXISTS idx_age;
+      DROP INDEX IF EXISTS idx_created_at;
+      DROP INDEX IF EXISTS idx_gender_prob;
+      DROP INDEX IF EXISTS idx_country_prob;
+    `);
+
+    const columnsResult = this.db.exec(`PRAGMA table_info(profiles)`);
+    if (columnsResult.length > 0) {
+      const existingColumns = new Set(
+        columnsResult[0].values.map((row) => String(row[1])),
+      );
+      const expectedColumns = new Set([
+        "id",
+        "name",
+        "gender",
+        "gender_probability",
+        "age",
+        "age_group",
+        "country_id",
+        "country_name",
+        "country_probability",
+        "created_at",
+      ]);
+
+      const schemaMatches =
+        existingColumns.size === expectedColumns.size &&
+        [...expectedColumns].every((column) => existingColumns.has(column));
+
+      if (!schemaMatches) {
+        this.db.run(`DROP TABLE IF EXISTS profiles`);
+      }
+    }
+
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS profiles (
         id                  TEXT PRIMARY KEY,
         name                TEXT NOT NULL UNIQUE,
         gender              TEXT NOT NULL,
         gender_probability  REAL NOT NULL,
-        sample_size         INTEGER NOT NULL,
         age                 INTEGER NOT NULL,
         age_group           TEXT NOT NULL,
         country_id          TEXT NOT NULL,
@@ -117,12 +152,6 @@ class SQLiteDatabase {
       return;
     }
 
-    const existing = this.count();
-    if (existing > 0) {
-      console.log(`Database already has ${existing} records. Skipping seed.`);
-      return;
-    }
-
     console.log("Seeding database from file…");
     const raw = JSON.parse(fs.readFileSync(seedPath, "utf-8"));
     const profiles: Omit<Profile, "id" | "created_at">[] = Array.isArray(raw)
@@ -131,9 +160,9 @@ class SQLiteDatabase {
 
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO profiles
-        (id, name, gender, gender_probability, sample_size, age, age_group, country_id, country_name, country_probability, created_at)
+        (id, name, gender, gender_probability, age, age_group, country_id, country_name, country_probability, created_at)
       VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const baseTime = new Date("2025-01-01T00:00:00.000Z").getTime();
@@ -150,7 +179,6 @@ class SQLiteDatabase {
         row.name.toLowerCase(),
         row.gender,
         row.gender_probability,
-        row.sample_size || 0,
         row.age,
         row.age_group,
         row.country_id,
@@ -184,15 +212,14 @@ class SQLiteDatabase {
     this.db.run(
       `
       INSERT OR IGNORE INTO profiles
-        (id, name, gender, gender_probability, sample_size, age, age_group, country_id, country_name, country_probability, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, name, gender, gender_probability, age, age_group, country_id, country_name, country_probability, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         record.id,
         record.name,
         record.gender,
         record.gender_probability,
-        record.sample_size,
         record.age,
         record.age_group,
         record.country_id,

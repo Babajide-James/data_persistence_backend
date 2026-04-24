@@ -26,26 +26,6 @@ interface NationalizeResponse {
 
 // ─── Profile list view type (for GET /api/profiles) ──────────────────────────
 
-interface ProfileListItem {
-  id: string;
-  name: string;
-  gender: string;
-  age: number;
-  age_group: string;
-  country_id: string;
-}
-
-function toListItem(profile: Profile): ProfileListItem {
-  return {
-    id: profile.id,
-    name: profile.name,
-    gender: profile.gender,
-    age: profile.age,
-    age_group: profile.age_group,
-    country_id: profile.country_id,
-  };
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const VALID_SORT_COLS = new Set(["age", "created_at", "gender_probability"]);
@@ -172,6 +152,39 @@ function parseFloatParam(
   return { value: n };
 }
 
+function hasDuplicateQueryParam(value: unknown): boolean {
+  return Array.isArray(value);
+}
+
+function isValidProbability(value: number): boolean {
+  return value >= 0 && value <= 1;
+}
+
+function isValidPage(value: number): boolean {
+  return Number.isInteger(value) && value >= 1;
+}
+
+function isValidLimit(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 50;
+}
+
+function isValidCountryId(value: string): boolean {
+  return /^[A-Za-z]{2}$/.test(value);
+}
+
+function sendPaginatedResponse(
+  res: Response,
+  result: { page: number; limit: number; total: number; data: Profile[] },
+): void {
+  res.status(200).json({
+    status: "success",
+    page: result.page,
+    limit: result.limit,
+    total: result.total,
+    data: result.data,
+  });
+}
+
 // ─── POST /api/profiles ───────────────────────────────────────────────────────
 
 export const createProfile = async (
@@ -270,7 +283,6 @@ export const createProfile = async (
 
     const gender = genderData.gender;
     const gender_probability = genderData.probability;
-    const sample_size = genderData.count;
     const age = ageData.age!;
     const age_group = getAgeGroup(age);
 
@@ -287,7 +299,6 @@ export const createProfile = async (
       name: normalizedName,
       gender,
       gender_probability,
-      sample_size,
       age,
       age_group,
       country_id,
@@ -363,6 +374,27 @@ export const getProfiles = async (
   res: Response,
 ): Promise<void> => {
   try {
+    const rawValues = [
+      req.query.gender,
+      req.query.age_group,
+      req.query.country_id,
+      req.query.min_age,
+      req.query.max_age,
+      req.query.min_gender_probability,
+      req.query.min_country_probability,
+      req.query.sort_by,
+      req.query.order,
+      req.query.page,
+      req.query.limit,
+    ];
+
+    if (rawValues.some(hasDuplicateQueryParam)) {
+      res
+        .status(422)
+        .json({ status: "error", message: "Invalid query parameters" });
+      return;
+    }
+
     const {
       gender,
       age_group,
@@ -410,6 +442,13 @@ export const getProfiles = async (
       errors.push(`'order' must be 'asc' or 'desc'`);
     }
 
+    if (
+      country_id !== undefined &&
+      !isValidCountryId(country_id as string)
+    ) {
+      errors.push(`'country_id' must be a 2-letter ISO code`);
+    }
+
     // Validate numeric params
     const minAgeResult =
       min_age !== undefined ? parseIntParam(min_age, "min_age") : null;
@@ -436,6 +475,72 @@ export const getProfiles = async (
     if (minCPResult && "error" in minCPResult) errors.push(minCPResult.error);
     if (pageResult && "error" in pageResult) errors.push(pageResult.error);
     if (limitResult && "error" in limitResult) errors.push(limitResult.error);
+
+    if (
+      minAgeResult &&
+      !("error" in minAgeResult) &&
+      !isNaN(minAgeResult.value) &&
+      minAgeResult.value < 0
+    ) {
+      errors.push(`'min_age' must be greater than or equal to 0`);
+    }
+
+    if (
+      maxAgeResult &&
+      !("error" in maxAgeResult) &&
+      !isNaN(maxAgeResult.value) &&
+      maxAgeResult.value < 0
+    ) {
+      errors.push(`'max_age' must be greater than or equal to 0`);
+    }
+
+    if (
+      minAgeResult &&
+      maxAgeResult &&
+      !("error" in minAgeResult) &&
+      !("error" in maxAgeResult) &&
+      !isNaN(minAgeResult.value) &&
+      !isNaN(maxAgeResult.value) &&
+      minAgeResult.value > maxAgeResult.value
+    ) {
+      errors.push(`'min_age' cannot be greater than 'max_age'`);
+    }
+
+    if (
+      minGPResult &&
+      !("error" in minGPResult) &&
+      !isNaN(minGPResult.value) &&
+      !isValidProbability(minGPResult.value)
+    ) {
+      errors.push(`'min_gender_probability' must be between 0 and 1`);
+    }
+
+    if (
+      minCPResult &&
+      !("error" in minCPResult) &&
+      !isNaN(minCPResult.value) &&
+      !isValidProbability(minCPResult.value)
+    ) {
+      errors.push(`'min_country_probability' must be between 0 and 1`);
+    }
+
+    if (
+      pageResult &&
+      !("error" in pageResult) &&
+      !isNaN(pageResult.value) &&
+      !isValidPage(pageResult.value)
+    ) {
+      errors.push(`'page' must be greater than or equal to 1`);
+    }
+
+    if (
+      limitResult &&
+      !("error" in limitResult) &&
+      !isNaN(limitResult.value) &&
+      !isValidLimit(limitResult.value)
+    ) {
+      errors.push(`'limit' must be between 1 and 50`);
+    }
 
     if (errors.length > 0) {
       res
@@ -477,11 +582,7 @@ export const getProfiles = async (
     const db = await getDb();
     const result = db.query(opts);
 
-    res.status(200).json({
-      status: "success",
-      count: result.data.length,
-      data: result.data.map(toListItem),
-    });
+    sendPaginatedResponse(res, result);
   } catch (error) {
     console.error("Error in getProfiles:", error);
     res
@@ -497,6 +598,17 @@ export const searchProfiles = async (
   res: Response,
 ): Promise<void> => {
   try {
+    if (
+      hasDuplicateQueryParam(req.query.q) ||
+      hasDuplicateQueryParam(req.query.page) ||
+      hasDuplicateQueryParam(req.query.limit)
+    ) {
+      res
+        .status(422)
+        .json({ status: "error", message: "Invalid query parameters" });
+      return;
+    }
+
     const q = req.query.q as string | undefined;
 
     if (!q || q.trim() === "") {
@@ -534,6 +646,22 @@ export const searchProfiles = async (
       return;
     }
 
+    if (
+      (pageResult &&
+        !("error" in pageResult) &&
+        !isNaN(pageResult.value) &&
+        !isValidPage(pageResult.value)) ||
+      (limitResult &&
+        !("error" in limitResult) &&
+        !isNaN(limitResult.value) &&
+        !isValidLimit(limitResult.value))
+    ) {
+      res
+        .status(422)
+        .json({ status: "error", message: "Invalid query parameters" });
+      return;
+    }
+
     const opts: QueryOptions = { ...parsed };
     if (pageResult && !("error" in pageResult) && !isNaN(pageResult.value))
       opts.page = pageResult.value;
@@ -543,11 +671,7 @@ export const searchProfiles = async (
     const db = await getDb();
     const result = db.query(opts);
 
-    res.status(200).json({
-      status: "success",
-      count: result.data.length,
-      data: result.data.map(toListItem),
-    });
+    sendPaginatedResponse(res, result);
   } catch (error) {
     console.error("Error in searchProfiles:", error);
     res

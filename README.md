@@ -10,7 +10,7 @@ A **Queryable Intelligence Engine** built for Insighta Labs. The API collects de
 |---|---|
 | Runtime | Node.js + TypeScript |
 | Framework | Express.js |
-| Database | SQLite (`better-sqlite3`) |
+| Database | SQLite (`sql.js` with persisted `.db` file) |
 | Deployment | Vercel (Serverless, `/tmp` DB path) |
 | IDs | UUID v7 |
 
@@ -139,7 +139,15 @@ Natural-language query interface. Converts plain English into filter conditions.
 | `limit` | No | Results per page (default: 10, max: 50) |
 
 #### Response Format
-Same as `GET /api/profiles`.
+```json
+{
+  "status": "success",
+  "page": 1,
+  "limit": 10,
+  "total": 2026,
+  "data": [ ... ]
+}
+```
 
 #### Example Queries
 
@@ -253,7 +261,7 @@ Indexes on: `gender`, `age_group`, `country_id`, `age`, `created_at`, `gender_pr
 
 ## Seeding
 
-The database is seeded automatically on server startup from `seed_profiles.json` at the project root. Re-running will **not** create duplicates — the seed is skipped if records already exist.
+The database is seeded automatically on server startup from `seed_profiles.json` at the project root. Re-running will **not** create duplicates because inserts are idempotent on the unique `name` column, so the database converges to the same 2026 seeded profiles.
 
 To re-seed from scratch: delete `profiles.db` (local) or let Vercel's `/tmp` reset on cold start.
 
