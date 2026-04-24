@@ -71,7 +71,7 @@ class SQLiteDatabase {
     // Provide locateFile so sql.js can find its WASM binary in
     // both local and Vercel serverless environments.
     const SQL = await initSqlJs({
-      locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
+      locateFile: (file: string) => path.join(__dirname, "..", file),
     });
 
     // Load strategy (fastest first):

@@ -8,7 +8,7 @@
         "includeFiles": [
           "profiles.db",
           "seed_profiles.json",
-          "node_modules/sql.js/dist/sql-wasm.wasm"
+          "sql-wasm.wasm"
         ]
       }
     }
